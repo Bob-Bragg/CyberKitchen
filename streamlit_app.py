@@ -1,20 +1,52 @@
 from __future__ import annotations
-import json, base64, io
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode, parse_qs
+import json, base64, io, re
+from dataclasses import dataclass
+from typing import Any, Dict, List
 import streamlit as st
 
-# ✅ Fixed, complete import — no dangling comma
-from ck_ops import (
-    OPS,
-    Operation,
-    to_bytes,
-    try_decode_utf8,
-    bytes_to_hex,
-    clamp_bytes,
-    magic_detect,
-)
+# ---- Robust import: fall back if ck_ops lacks `magic_detect`
+try:
+    from ck_ops import (
+        OPS,
+        Operation,
+        to_bytes,
+        try_decode_utf8,
+        bytes_to_hex,
+        clamp_bytes,
+        magic_detect,   # may not exist in your ck_ops
+    )
+except ImportError:
+    # Re-import everything except magic_detect
+    from ck_ops import (
+        OPS,
+        Operation,
+        to_bytes,
+        try_decode_utf8,
+        bytes_to_hex,
+        clamp_bytes,
+    )
+    # Minimal local magic_detect fallback
+    def magic_detect(sample: str):
+        hints = []
+        s = (sample or "").strip()
+        # Base64 heuristic
+        if re.fullmatch(r"[A-Za-z0-9+/=\s]{8,}", s):
+            try:
+                base64.b64decode(s, validate=True)
+                hints.append(("Base64", 0.90))
+            except Exception:
+                pass
+        # Hex heuristic
+        if re.fullmatch(r"[0-9A-Fa-f]{2,}", s) and len(s) % 2 == 0:
+            hints.append(("Hex", 0.80))
+        # JWT heuristic
+        parts = s.split(".")
+        if len(parts) in (2, 3) and all(re.fullmatch(r"[A-Za-z0-9_\-]+", p or "") for p in parts):
+            hints.append(("JWT", 0.95))
+        # URL-encoding heuristic
+        if "%" in s or "+" in s:
+            hints.append(("URL-Encoded", 0.60))
+        return sorted(hints, key=lambda x: x[1], reverse=True)
 
 APP = "CyberKitchen"
 st.set_page_config(page_title=APP, page_icon="🍳", layout="wide")
@@ -27,20 +59,17 @@ class Step:
     op_key: str
     enabled: bool = True
     params: Dict[str, Any] = None
-
-    def to_json(self): return {"op_key": self.op_key, "enabled": self.enabled, "params": self.params or {}}
+    def to_json(self): 
+        return {"op_key": self.op_key, "enabled": self.enabled, "params": self.params or {}}
 
 @dataclass
 class Recipe:
     steps: List[Step]
-
     def to_json(self):
         return {"steps": [s.to_json() for s in self.steps]}
 
-# Defaults
 if "recipe" not in st.session_state:
     st.session_state.recipe = Recipe(steps=[])
-
 if "input_bytes" not in st.session_state:
     st.session_state.input_bytes = b""
 
@@ -54,7 +83,8 @@ def recipe_to_b64url(recipe: Recipe) -> str:
 def recipe_from_b64url(s: str) -> Recipe:
     data = base64.urlsafe_b64decode(s.encode("ascii"))
     obj = json.loads(data.decode("utf-8"))
-    steps = [Step(op_key=s["op_key"], enabled=bool(s.get("enabled", True)), params=s.get("params") or {}) for s in obj.get("steps",[])]
+    steps = [Step(op_key=it["op_key"], enabled=bool(it.get("enabled", True)), params=it.get("params") or {}) 
+             for it in obj.get("steps",[])]
     return Recipe(steps=steps)
 
 def load_recipe_from_url_if_any():
@@ -81,7 +111,7 @@ with c2:
         sample = try_decode_utf8(st.session_state.input_bytes)[:4000]
         hints = magic_detect(sample)
         if hints:
-            st.info("\n".join([f"- {name} (confidence {int(conf*100)}%)" for name,conf in hints]))
+            st.info("\n".join([f"- {name} (confidence {int(conf*100)}%)" for name, conf in hints]))
         else:
             st.info("No obvious patterns detected.")
 
@@ -104,7 +134,8 @@ with c4:
     if uploaded:
         try:
             obj = json.loads(uploaded.read().decode("utf-8"))
-            steps = [Step(op_key=s["op_key"], enabled=bool(s.get("enabled",True)), params=s.get("params") or {}) for s in obj.get("steps",[])]
+            steps = [Step(op_key=s["op_key"], enabled=bool(s.get("enabled",True)), params=s.get("params") or {}) 
+                     for s in obj.get("steps",[])]
             st.session_state.recipe = Recipe(steps=steps)
             st.success("Recipe loaded.")
         except Exception as e:
@@ -142,7 +173,6 @@ with left:
 with middle:
     st.subheader("🔧 Recipe Builder")
 
-    # Add new step
     cols = st.columns([2,1,1,1])
     with cols[0]:
         new_op = st.selectbox("Add operation", ["—"] + [f"{o.category} · {o.name} ({k})" for k,o in OPS.items()])
@@ -150,7 +180,6 @@ with middle:
         if st.button("➕ Add"):
             if new_op != "—":
                 key = new_op.split("(")[-1].rstrip(")")
-                op = OPS[key]
                 st.session_state.recipe.steps.append(Step(op_key=key, enabled=True, params={}))
                 st.rerun()
     with cols[2]:
@@ -159,9 +188,8 @@ with middle:
             st.rerun()
     with cols[3]:
         if st.button("▶ Run"):
-            pass  # preview happens in the right panel live
+            pass
 
-    # Step list
     for idx, step in enumerate(st.session_state.recipe.steps):
         op = OPS.get(step.op_key)
         with st.expander(f"Step {idx+1}: {op.name} [{op.category}]  ({step.op_key})", expanded=False):
@@ -183,7 +211,6 @@ with middle:
             with top[4]:
                 st.caption(op.name)
 
-            # Parameter widgets (generic)
             step.params = step.params or {}
             schema = op.params_schema or {}
             cols2 = st.columns(3)
@@ -205,9 +232,9 @@ with right:
     errors: List[str] = []
     intermediate_previews = st.checkbox("Show intermediate outputs", value=False)
 
-    # Execute recipe
     for idx, step in enumerate(st.session_state.recipe.steps):
-        if not step.enabled: continue
+        if not step.enabled: 
+            continue
         op = OPS.get(step.op_key)
         try:
             data, meta = op.fn(data, step.params or {})
