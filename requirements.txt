@@ -1,1 +1,4 @@
-streamlit
+streamlit==1.38.0
+python-dateutil==2.9.0.post0
+regex==2024.5.15
+pyjwt==2.9.0
